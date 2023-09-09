@@ -14,16 +14,24 @@
 #include <stdlib.h>
 #include <string.h>
 #include <3ds.h>
+#include <citro2d.h>
 #include "twlcdc.h"
 
 int main(int argc, char **argv) {
     aptHookCookie aptHookCookie;
     bool initOk = false;
 
+    // Initialize 2D/3D graphics
     gfxInitDefault();
-    consoleInit(GFX_TOP, NULL);
+    C3D_Init(C3D_DEFAULT_CMDBUF_SIZE);
+    C2D_Init(C2D_DEFAULT_MAX_OBJECTS);
+    C2D_Prepare();
 
-    iprintf("libtwlcdc sample\n");
+    // Initialize console on top screen, accelerated render target on bottom screen
+    consoleInit(GFX_TOP, NULL);
+    C3D_RenderTarget* bottom = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
+
+    printf("libtwlcdc sample\n");
 
     // Required for twlcdcInit()
     cfguInit();
@@ -31,34 +39,60 @@ int main(int argc, char **argv) {
 
     if (twlcdcInit()) {
         initOk = true;
-        iprintf("libtwlcdc initialized!\n\n");
+        printf("libtwlcdc initialized!\n\n");
     } else {
-        iprintf("Could not init libtwlcdc!\n\n");
+        printf("Could not init libtwlcdc!\n\n");
     }
 
     // Print calibration data
     twlcdcTouchCalibration *calibr = twlcdcTouchGetCalibration();
-    iprintf("Calibr. U/L: [%04X, %04X] => [%d, %d]\n", calibr->calX1, calibr->calY1, calibr->calX1px, calibr->calY1px);
-    iprintf("Calibr. B/R: [%04X, %04X] => [%d, %d]\n", calibr->calX2, calibr->calY2, calibr->calX2px, calibr->calY2px);
+    printf("Calibr. U/L: [%04X, %04X] => [%d, %d]\n", calibr->calX1, calibr->calY1, calibr->calX1px, calibr->calY1px);
+    printf("Calibr. B/R: [%04X, %04X] => [%d, %d]\n", calibr->calX2, calibr->calY2, calibr->calX2px, calibr->calY2px);
 
     // Main loop
     while (aptMainLoop()) {
         gspWaitForVBlank();
-        gfxSwapBuffers();
+        gfxScreenSwapBuffers(GFX_TOP, false);
+
+        C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+        C2D_TargetClear(bottom, C2D_Color32(0, 0, 0, 255));
+        C2D_SceneBegin(bottom);
 
         // Print touch data
         if (initOk && twlcdcTouchPenDown()) {
             twlcdcTouchPosition tpos;
             twlcdcTouchRead(&tpos);
-            
-            s32 tarea = tpos.z1 != 0 ? (tpos.px * tpos.z2 / tpos.z1) - tpos.px : -1;
 
-            iprintf("\x1b[9;1H");
-            iprintf("Raw coords: [%d, %d]            \n", tpos.rawx, tpos.rawy);
-            iprintf("Adj coords: [%d, %d]            \n", tpos.px, tpos.py);
-            iprintf("Touch Z1Z2: [%d, %d]            \n", tpos.z1, tpos.z2);
-            iprintf("Touch area: %ld           \n", tarea);
+            printf("\x1b[9;1H");
+            printf("Raw coords: [%d, %d]            \n", tpos.rawx, tpos.rawy);
+            printf("Adj coords: [%d, %d]            \n", tpos.px, tpos.py);
+            printf("Touch Z1Z2: [%d, %d]            \n", tpos.z1, tpos.z2);
+
+            if (tpos.z1 != 0) {
+                const u32 maxPressure = 0x00DE0000;
+                const u32 maxRadius = 128;
+
+                u32 tosend = tpos.rawx * ((tpos.z2 * 4096 / tpos.z1) - 4096);
+                float pressure = (float) maxPressure / (float) tosend * maxRadius;
+
+                printf("Resistance: %08lX %lu               \n", tosend, tosend);
+                printf("Pressure: %f                  \n", pressure);
+
+                if (!isinf(pressure) && pressure > 0) {
+                    u32 circleColor = C2D_Color32(146, 77, 200, 255);
+                    u32 maxPixelsPerCircle = 192;
+                    float currentPressure = pressure;
+                    while (currentPressure > 0) {
+                        C2D_DrawCircleSolid(tpos.px, tpos.py, 0.0f, (currentPressure * currentPressure) / maxRadius, circleColor);
+                        currentPressure -= maxPixelsPerCircle;
+                        // Darken circle color.
+                        circleColor = ((circleColor >> 1) & 0x7F7F7F) | 0xFF000000;
+                    }
+                }
+            }
         }
+
+        C3D_FrameEnd(0);
 
         hidScanInput();
         u32 kDown = hidKeysDown();
@@ -73,6 +107,8 @@ int main(int argc, char **argv) {
     }
     cdcChkExit();
     cfguExit();
+
+    C2D_Fini();
 
     gfxExit();
     return 0;
